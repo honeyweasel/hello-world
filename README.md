@@ -17,7 +17,6 @@ The `qr_generator.py` script is marked as executable so it can be run directly.
 The output image is a plain PPM file which can be viewed with many image
 viewers. No additional Python packages are required.
 
-
 ### GUI version
 
 A simple graphical interface is provided in `qr_gui.py`. Run the script to
@@ -36,3 +35,4 @@ pyinstaller --onefile qr_gui.py
 ```
 
 The resulting executable will be placed in the `dist` directory.
+=======
