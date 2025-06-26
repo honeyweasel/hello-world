@@ -12,6 +12,8 @@ import argparse
 import sys
 from typing import Iterable, List
 
+from PIL import Image
+
 
 # ---------------------------- GF(256) arithmetic ----------------------------
 # The QR code specification uses GF(256) with the primitive polynomial
@@ -66,10 +68,16 @@ def _rs_compute(data: List[int], ec_len: int) -> List[int]:
 
 
 # --------------------------- QR matrix helpers ------------------------------
-SIZE = 21  # Version 1
+QR_VERSIONS = [
+    (1, 21, 19, 7),
+    (2, 25, 34, 10),
+    (3, 29, 55, 15),
+    (4, 33, 80, 20),
+]
 
-def _empty_matrix() -> List[List[int | None]]:
-    return [[None for _ in range(SIZE)] for _ in range(SIZE)]
+
+def _empty_matrix(size: int) -> List[List[int | None]]:
+    return [[None for _ in range(size)] for _ in range(size)]
 
 
 def _add_finder_pattern(mat: List[List[int]], x: int, y: int) -> None:
@@ -87,46 +95,46 @@ def _add_finder_pattern(mat: List[List[int]], x: int, y: int) -> None:
             mat[y + dy][x + dx] = val
 
 
-def _add_separators(mat: List[List[int]], x: int, y: int) -> None:
+def _add_separators(mat: List[List[int]], x: int, y: int, size: int) -> None:
     for i in range(8):
-        if 0 <= y + i < SIZE and x - 1 >= 0:
+        if 0 <= y + i < size and x - 1 >= 0:
             mat[y + i][x - 1] = 0
-        if 0 <= y + i < SIZE and x + 7 < SIZE:
+        if 0 <= y + i < size and x + 7 < size:
             mat[y + i][x + 7] = 0
-        if 0 <= x + i < SIZE and y - 1 >= 0:
+        if 0 <= x + i < size and y - 1 >= 0:
             mat[y - 1][x + i] = 0
-        if 0 <= x + i < SIZE and y + 7 < SIZE:
+        if 0 <= x + i < size and y + 7 < size:
             mat[y + 7][x + i] = 0
 
 
-def _add_timing_patterns(mat: List[List[int]]) -> None:
-    for i in range(8, SIZE - 8):
+def _add_timing_patterns(mat: List[List[int]], size: int) -> None:
+    for i in range(8, size - 8):
         val = i % 2
         mat[6][i] = val
         mat[i][6] = val
 
 
-def _reserve_format_info(mat: List[List[int]]) -> None:
+def _reserve_format_info(mat: List[List[int]], size: int) -> None:
     for i in range(9):
         if mat[8][i] is None:
             mat[8][i] = 0
         if mat[i][8] is None:
             mat[i][8] = 0
     for i in range(8):
-        mat[SIZE - 1 - i][8] = 0
-        mat[8][SIZE - 1 - i] = 0
-    mat[SIZE - 8][8] = 1  # Dark module
+        mat[size - 1 - i][8] = 0
+        mat[8][size - 1 - i] = 0
+    mat[size - 8][8] = 1  # Dark module
 
 
-def _set_data_bits(mat: List[List[int]], bits: List[int]) -> None:
+def _set_data_bits(mat: List[List[int]], bits: List[int], size: int) -> None:
     i = 0
-    x = SIZE - 1
-    y = SIZE - 1
+    x = size - 1
+    y = size - 1
     direction = -1
     while x > 0:
         if x == 6:
             x -= 1
-        for _ in range(SIZE):
+        for _ in range(size):
             for dx in (0, -1):
                 col = x + dx
                 if mat[y][col] is None:
@@ -136,7 +144,7 @@ def _set_data_bits(mat: List[List[int]], bits: List[int]) -> None:
                     mat[y][col] = bit
                     i += 1
             y += direction
-            if y < 0 or y >= SIZE:
+            if y < 0 or y >= size:
                 y -= direction
                 break
         direction *= -1
@@ -149,7 +157,7 @@ def _set_data_bits(mat: List[List[int]], bits: List[int]) -> None:
 FORMAT_BITS = 0b111011111000100  # Level L, mask 0
 
 
-def _add_format_info(mat: List[List[int]]) -> None:
+def _add_format_info(mat: List[List[int]], size: int) -> None:
     bits = [int(b) for b in f"{FORMAT_BITS:015b}"]
     # Top-left
     for i in range(6):
@@ -162,15 +170,15 @@ def _add_format_info(mat: List[List[int]]) -> None:
 
     # Top-right
     for i in range(8):
-        mat[i][SIZE - 8] = bits[i]
+        mat[i][size - 8] = bits[i]
     for i in range(7):
-        mat[SIZE - 8][i + 1] = bits[8 + i]
+        mat[size - 8][i + 1] = bits[8 + i]
 
 
 # --------------------------- Image output ----------------------------------
 
 def _write_ppm(mat: List[List[int]], path: str, scale: int = 10) -> None:
-    size = SIZE * scale
+    size = len(mat) * scale
     with open(path, "wb") as f:
         f.write(f"P6\n{size} {size} 255\n".encode())
         for row in mat:
@@ -182,11 +190,48 @@ def _write_ppm(mat: List[List[int]], path: str, scale: int = 10) -> None:
                 f.write(line)
 
 
+def _write_jpeg(mat: List[List[int]], path: str, scale: int = 10) -> None:
+    size = len(mat) * scale
+    img = Image.new("L", (size, size), 255)
+    pixels = img.load()
+    for y, row in enumerate(mat):
+        for x, module in enumerate(row):
+            val = 0 if module else 255
+            for dy in range(scale):
+                for dx in range(scale):
+                    pixels[x * scale + dx, y * scale + dy] = val
+    img.save(path, "JPEG")
+
+
+def _add_alignment_patterns(mat: list, version: int, size: int):
+    # Alignment pattern locations for versions 2-4 (from QR spec)
+    ALIGNMENT_LOC = {
+        2: [6, 18],
+        3: [6, 22],
+        4: [6, 26],
+    }
+    if version < 2:
+        return
+    locs = ALIGNMENT_LOC[version]
+    for y in locs:
+        for x in locs:
+            # Skip if overlaps with finder pattern
+            if (x <= 8 and y <= 8) or (x <= 8 and y >= size - 8) or (x >= size - 8 and y <= 8):
+                continue
+            # Draw alignment pattern (5x5)
+            for dy in range(-2, 3):
+                for dx in range(-2, 3):
+                    if 0 <= y+dy < size and 0 <= x+dx < size:
+                        if abs(dx) == 2 or abs(dy) == 2 or (dx == 0 and dy == 0):
+                            mat[y+dy][x+dx] = 1
+                        else:
+                            mat[y+dy][x+dx] = 0
+
+
 # --------------------------- High level API --------------------------------
 
 def generate_qr(data: str, output_file: str) -> None:
     """Generate a QR code and save it as a PPM image."""
-    # Data encoding (byte mode)
     data_bytes = data.encode("iso-8859-1")
     bits = []
     bits.extend([0, 1, 0, 0])  # Mode indicator
@@ -194,37 +239,43 @@ def generate_qr(data: str, output_file: str) -> None:
     bits.extend(int(b) for b in f"{count:08b}")
     for b in data_bytes:
         bits.extend(int(x) for x in f"{b:08b}")
-    # Terminator
-    bits.extend([0, 0, 0, 0])
-    # Pad to byte
+    bits.extend([0, 0, 0, 0])  # Terminator
     while len(bits) % 8 != 0:
         bits.append(0)
+    # Select version
+    for version, size, data_cw, ec_cw in QR_VERSIONS:
+        if len(bits) // 8 <= data_cw:
+            break
+    else:
+        raise ValueError("Data too long for Version 4 QR code")
     # Pad bytes
     data_codewords = []
     for i in range(0, len(bits), 8):
         data_codewords.append(int("".join(str(x) for x in bits[i:i+8]), 2))
     pad_bytes = [0xEC, 0x11]
-    while len(data_codewords) < 19:
+    while len(data_codewords) < data_cw:
         data_codewords.append(pad_bytes[len(data_codewords) % 2])
-    ec_codewords = _rs_compute(data_codewords, 7)
+    ec_codewords = _rs_compute(data_codewords, ec_cw)
     codewords = data_codewords + ec_codewords
-    # Bit stream from codewords
     bit_stream = []
     for cw in codewords:
         bit_stream.extend(int(b) for b in f"{cw:08b}")
-    # Build matrix
-    mat = _empty_matrix()
+    mat = _empty_matrix(size)
     _add_finder_pattern(mat, 0, 0)
-    _add_finder_pattern(mat, SIZE - 7, 0)
-    _add_finder_pattern(mat, 0, SIZE - 7)
-    _add_separators(mat, 0, 0)
-    _add_separators(mat, SIZE - 7, 0)
-    _add_separators(mat, 0, SIZE - 7)
-    _add_timing_patterns(mat)
-    _reserve_format_info(mat)
-    _set_data_bits(mat, bit_stream)
-    _add_format_info(mat)
-    _write_ppm(mat, output_file)
+    _add_finder_pattern(mat, size - 7, 0)
+    _add_finder_pattern(mat, 0, size - 7)
+    _add_separators(mat, 0, 0, size)
+    _add_separators(mat, size - 7, 0, size)
+    _add_separators(mat, 0, size - 7, size)
+    _add_alignment_patterns(mat, version, size)
+    _add_timing_patterns(mat, size)
+    _reserve_format_info(mat, size)
+    _set_data_bits(mat, bit_stream, size)
+    _add_format_info(mat, size)
+    if output_file.lower().endswith('.jpg') or output_file.lower().endswith('.jpeg'):
+        _write_jpeg(mat, output_file, scale=10)
+    else:
+        _write_ppm(mat, output_file, scale=10)
 
 
 # --------------------------- CLI interface ---------------------------------

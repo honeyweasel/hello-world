@@ -14,11 +14,17 @@ def _generate():
     if not data:
         messagebox.showerror("Error", "Please enter text to encode")
         return
+    # Automatically add mailto: if input looks like an email address
+    if "@" in data and not data.lower().startswith("mailto:") and "." in data.split("@")[-1]:
+        data = f"mailto:{data}"
     path = filedialog.asksaveasfilename(
-        defaultextension=".ppm", filetypes=[("PPM image", "*.ppm")]
+        defaultextension=".jpg", filetypes=[("JPEG image", "*.jpg;*.jpeg")]
     )
     if not path:
         return
+    # Ensure file extension is .jpg if not present
+    if not (path.lower().endswith('.jpg') or path.lower().endswith('.jpeg')):
+        path += ".jpg"
     try:
         generate_qr(data, path)
     except Exception as exc:  # pragma: no cover - user feedback only
